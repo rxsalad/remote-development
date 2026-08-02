@@ -1,0 +1,99 @@
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dev-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dev-server
+  template:
+    metadata:
+      labels:
+        app: dev-server
+    spec:
+      restartPolicy: Always
+
+      nodeSelector:
+        doks.digitalocean.com/gpu-brand: amd
+
+      tolerations:
+        - key: amd.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+      volumes:
+
+        - name: dev-net-tun
+          hostPath:
+            path: /dev/net/tun
+            type: CharDevice
+
+        - name: temp-hf-cache
+          hostPath:
+            path: /root/.cache/huggingface
+            type: DirectoryOrCreate
+
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Gi
+
+      containers:
+        - name: server
+          #image: vllm/vllm-openai-rocm:v0.21.0
+          image: rocm/pytorch:rocm7.0.2_ubuntu24.04_py3.12_pytorch_release_2.6.0 
+          imagePullPolicy: Always
+          
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -ex
+
+              curl -fsSL https://tailscale.com/install.sh | sh
+
+              tailscaled &
+              sleep 5
+
+              # Prevent Tailscale from modifying the DNS resolution settings.
+              tailscale up --auth-key=${TS_AUTH_KEY} --hostname=$(hostname)
+              sleep 5
+
+              tailscale set --ssh
+              printenv > /etc/environment
+
+              mkdir /root/work
+              cd /root/work
+          
+              exec sleep infinity
+              # Do some work here, e.g., run a server or training script.
+
+          env:
+            - name: TS_AUTH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rs-ts-auth-key
+                  key: TS_AUTH_KEY
+
+          securityContext:
+            capabilities:
+              add:
+                - IPC_LOCK
+                - NET_ADMIN
+
+          volumeMounts:
+            - name: temp-hf-cache
+              mountPath: /root/.cache/huggingface
+
+            - name: dshm
+              mountPath: /dev/shm
+
+            - name: dev-net-tun
+              mountPath: /dev/net/tun
+
+          resources:
+            limits:
+              amd.com/gpu: "8"
+            requests:
+              amd.com/gpu: "8"
